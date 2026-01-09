@@ -1,0 +1,17 @@
+# Build output
+cmake-build-debug/
+cmake-build-release/
+
+# ISO output
+myos.iso
+
+# QEMU logs
+qemu.log
+
+# Editor / IDE junk
+.vscode/
+.idea/
+
+# Object / binary files
+*.o
+*.elf
