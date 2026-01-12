@@ -1,3 +1,7 @@
+/build/
+/cmake-build*/
+/serial.log
+/*.iso
 # Build output
 cmake-build-debug/
 cmake-build-release/

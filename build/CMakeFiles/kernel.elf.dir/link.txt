@@ -1,1 +1,0 @@
-/usr/bin/cc -T /home/shaun/myos/linker.ld -nostdlib -no-pie -Wl,--build-id=none -m64 CMakeFiles/kernel.elf.dir/src/multiboot.S.o CMakeFiles/kernel.elf.dir/src/boot.S.o CMakeFiles/kernel.elf.dir/src/kernel.c.o -o kernel.elf 

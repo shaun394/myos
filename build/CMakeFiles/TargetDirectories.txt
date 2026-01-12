@@ -1,3 +1,0 @@
-/home/shaun/myos/build/CMakeFiles/kernel.elf.dir
-/home/shaun/myos/build/CMakeFiles/edit_cache.dir
-/home/shaun/myos/build/CMakeFiles/rebuild_cache.dir

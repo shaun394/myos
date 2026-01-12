@@ -1,4 +1,0 @@
-BOOT: reached 32-bit _start
-BOOT: reached 64-bit long mode
-KERNEL: entered kmain
-myos> 
