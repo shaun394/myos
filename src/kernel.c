@@ -2,18 +2,22 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* -------------------- Port I/O -------------------- */
+/* =========================
+ * PORT I/O
+ * ========================= */
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
-
 static inline uint8_t inb(uint16_t port) {
     uint8_t ret;
     __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
     return ret;
 }
+static inline void cpu_relax(void) { __asm__ volatile("pause"); }
 
-/* -------------------- Serial (COM1) -------------------- */
+/* =========================
+ * SERIAL (COM1)
+ * ========================= */
 #define COM1 0x3F8
 
 static void serial_init(void) {
@@ -25,100 +29,260 @@ static void serial_init(void) {
     outb(COM1 + 2, 0xC7);
     outb(COM1 + 4, 0x0B);
 }
-
 static void serial_write_char(char c) {
     while ((inb(COM1 + 5) & 0x20) == 0) { }
     outb(COM1, (uint8_t)c);
 }
-
 static void serial_write(const char* s) {
     for (size_t i = 0; s[i]; i++) {
         if (s[i] == '\n') serial_write_char('\r');
         serial_write_char(s[i]);
     }
 }
+static void serial_hex_nibble(uint8_t n) {
+    n &= 0xF;
+    serial_write_char(n < 10 ? ('0' + n) : ('A' + (n - 10)));
+}
+static void serial_hex8(uint8_t v) {
+    serial_hex_nibble(v >> 4);
+    serial_hex_nibble(v);
+}
 
-/* -------------------- VGA text mode (80x25) -------------------- */
+/* =========================
+ * VGA TEXT MODE (80x25)
+ * ========================= */
 static volatile uint16_t* const VGA = (uint16_t*)0xB8000;
-
-static size_t vga_row = 0;
-static size_t vga_col = 0;
-
-/* color: high nibble background, low nibble foreground */
-static uint8_t vga_color = 0x0F; // white on black
+static size_t vga_row = 0, vga_col = 0;
+static uint8_t vga_color = 0x0F;
 
 static inline uint16_t vga_entry(char ch, uint8_t color) {
     return (uint16_t)ch | ((uint16_t)color << 8);
 }
-
 static void vga_set_color(uint8_t fg, uint8_t bg) {
     vga_color = (uint8_t)((bg << 4) | (fg & 0x0F));
 }
-
 static void vga_clear(uint8_t fg, uint8_t bg) {
     vga_set_color(fg, bg);
-    for (size_t r = 0; r < 25; r++) {
-        for (size_t c = 0; c < 80; c++) {
+    for (size_t r = 0; r < 25; r++)
+        for (size_t c = 0; c < 80; c++)
             VGA[r * 80 + c] = vga_entry(' ', vga_color);
-        }
-    }
     vga_row = 0;
     vga_col = 0;
 }
-
 static void vga_putc(char ch) {
-    if (ch == '\n') {
-        vga_col = 0;
-        vga_row++;
-        if (vga_row >= 25) vga_row = 0; // wrap for now
+    if (ch == '\n') { vga_col = 0; vga_row = (vga_row + 1) % 25; return; }
+    VGA[vga_row * 80 + vga_col] = vga_entry(ch, vga_color);
+    if (++vga_col >= 80) { vga_col = 0; vga_row = (vga_row + 1) % 25; }
+}
+static void vga_write(const char* s) { for (size_t i = 0; s[i]; i++) vga_putc(s[i]); }
+static void vga_backspace(void) {
+    if (vga_col == 0) { if (vga_row == 0) return; vga_row--; vga_col = 79; }
+    else vga_col--;
+    VGA[vga_row * 80 + vga_col] = vga_entry(' ', vga_color);
+}
+
+/* =========================
+ * LOG (VGA + SERIAL)
+ * ========================= */
+static void klog_char(char c) {
+    if (c == '\n') serial_write("\r\n");
+    else serial_write_char(c);
+    vga_putc(c);
+}
+
+/* =========================
+ * i8042 + PS/2 Keyboard (polling)
+ * ========================= */
+#define KBD_DATA   0x60
+#define KBD_STATUS 0x64
+#define KBD_CMD    0x64
+
+static void i8042_wait_input_clear(void) {
+    for (int i = 0; i < 300000; i++) {
+        if (!(inb(KBD_STATUS) & 0x02)) return; // IBF=0
+        cpu_relax();
+    }
+}
+static void i8042_write_cmd(uint8_t cmd) {
+    i8042_wait_input_clear();
+    outb(KBD_CMD, cmd);
+}
+static void i8042_write_data(uint8_t data) {
+    i8042_wait_input_clear();
+    outb(KBD_DATA, data);
+}
+static uint8_t i8042_read_data_wait(void) {
+    for (int i = 0; i < 300000; i++) {
+        if (inb(KBD_STATUS) & 0x01) return inb(KBD_DATA); // OBF=1
+        cpu_relax();
+    }
+    return 0x00;
+}
+static void i8042_flush(void) {
+    for (int i = 0; i < 64; i++) {
+        uint8_t st = inb(KBD_STATUS);
+        if (!(st & 0x01)) break;
+        (void)inb(KBD_DATA);
+    }
+}
+
+// returns 0 none, 1 keyboard byte, 2 AUX byte
+static int kbd_read_byte(uint8_t* out) {
+    uint8_t st = inb(KBD_STATUS);
+    if (!(st & 0x01)) return 0;
+    uint8_t b = inb(KBD_DATA);
+    *out = b;
+    return (st & 0x20) ? 2 : 1;
+}
+
+static void kbd_send_cmd(uint8_t cmd) {
+    i8042_write_data(cmd);
+    // consume ACK (0xFA) if it appears
+    for (int i = 0; i < 200000; i++) {
+        uint8_t b;
+        int kind = kbd_read_byte(&b);
+        if (kind == 1 && b == 0xFA) return;
+        cpu_relax();
+    }
+}
+
+static void keyboard_init_hard_set1(void) {
+    serial_write("KB: hard init i8042\n");
+
+    // Disable both ports, flush output
+    i8042_write_cmd(0xAD);
+    i8042_write_cmd(0xA7);
+    i8042_flush();
+
+    // Read command byte
+    i8042_write_cmd(0x20);
+    uint8_t cb = i8042_read_data_wait();
+    serial_write("KB: cmdbyte before = 0x"); serial_hex8(cb); serial_write("\n");
+
+    // Ensure keyboard clock enabled (bit4=0), keep mouse disabled (bit5=1),
+    // and ENABLE translation (bit6=1) => Set 1 scancodes.
+    cb &= ~(1 << 4);
+    cb |=  (1 << 5);
+    cb |=  (1 << 6);
+
+    i8042_write_cmd(0x60);
+    i8042_write_data(cb);
+
+    // Re-enable keyboard port
+    i8042_write_cmd(0xAE);
+
+    // Enable scanning
+    serial_write("KB: send 0xF4 (enable scanning)\n");
+    kbd_send_cmd(0xF4);
+
+    // Confirm
+    i8042_write_cmd(0x20);
+    uint8_t cb2 = i8042_read_data_wait();
+    serial_write("KB: cmdbyte after  = 0x"); serial_hex8(cb2); serial_write("\n");
+}
+
+/* =========================
+ * Scancode Set 1 decode
+ * ========================= */
+// Set 1: break = make | 0x80
+static int shift_down = 0;
+
+static char scancode_set1_to_ascii(uint8_t sc) {
+    // letters only (US)
+    switch (sc) {
+        case 0x1E: return shift_down ? 'A' : 'a';
+        case 0x30: return shift_down ? 'B' : 'b';
+        case 0x2E: return shift_down ? 'C' : 'c';
+        case 0x20: return shift_down ? 'D' : 'd';
+        case 0x12: return shift_down ? 'E' : 'e';
+        case 0x21: return shift_down ? 'F' : 'f';
+        case 0x22: return shift_down ? 'G' : 'g';
+        case 0x23: return shift_down ? 'H' : 'h';
+        case 0x17: return shift_down ? 'I' : 'i';
+        case 0x24: return shift_down ? 'J' : 'j';
+        case 0x25: return shift_down ? 'K' : 'k';
+        case 0x26: return shift_down ? 'L' : 'l';
+        case 0x32: return shift_down ? 'M' : 'm';
+        case 0x31: return shift_down ? 'N' : 'n';
+        case 0x18: return shift_down ? 'O' : 'o';
+        case 0x19: return shift_down ? 'P' : 'p';
+        case 0x10: return shift_down ? 'Q' : 'q';
+        case 0x13: return shift_down ? 'R' : 'r';
+        case 0x1F: return shift_down ? 'S' : 's';
+        case 0x14: return shift_down ? 'T' : 't';
+        case 0x16: return shift_down ? 'U' : 'u';
+        case 0x2F: return shift_down ? 'V' : 'v';
+        case 0x11: return shift_down ? 'W' : 'w';
+        case 0x2D: return shift_down ? 'X' : 'x';
+        case 0x15: return shift_down ? 'Y' : 'y';
+        case 0x2C: return shift_down ? 'Z' : 'z';
+
+        case 0x39: return ' ';    // space
+        case 0x1C: return '\n';   // enter
+        case 0x0E: return '\b';   // backspace
+        default:   return 0;
+    }
+}
+
+static void kbd_handle_set1(uint8_t byte) {
+    // ignore AUX already handled by caller
+
+    uint8_t sc = byte;
+    int is_break = (sc & 0x80) != 0;
+    uint8_t make = (uint8_t)(sc & 0x7F);
+
+    // Shift keys: left 0x2A, right 0x36
+    if (make == 0x2A || make == 0x36) {
+        shift_down = !is_break;
         return;
     }
 
-    VGA[vga_row * 80 + vga_col] = vga_entry(ch, vga_color);
+    // Ignore releases for normal keys
+    if (is_break) return;
 
-    vga_col++;
-    if (vga_col >= 80) {
-        vga_col = 0;
-        vga_row++;
-        if (vga_row >= 25) vga_row = 0;
+    char ch = scancode_set1_to_ascii(make);
+    if (!ch) return;
+
+    if (ch == '\b') {
+        vga_backspace();
+        serial_write("\b \b");
+        return;
     }
+
+    if (ch == '\n') {
+        klog_char('\n');
+        vga_set_color(0x0A, 0x00);
+        vga_write("myos> ");
+        serial_write("myos> ");
+        return;
+    }
+
+    klog_char(ch);
 }
 
-static void vga_write(const char* s) {
-    for (size_t i = 0; s[i]; i++) vga_putc(s[i]);
-}
-
-/* VGA-only write with explicit fg/bg (guarantees color per line) */
-static void vga_write_color(uint8_t fg, uint8_t bg, const char* s) {
-    vga_set_color(fg, bg);
-    vga_write(s);
-}
-
-/* -------------------- Kernel entry -------------------- */
+/* =========================
+ * KERNEL ENTRY
+ * ========================= */
 void kmain(void) {
     serial_init();
     serial_write("KERNEL: entered kmain\n");
 
-    /* Clear screen first so you can see color changes cleanly */
-    vga_clear(/*fg*/0x0F, /*bg*/0x00);
+    vga_clear(0x0F, 0x00);
+    vga_set_color(0x0A, 0x00);
+    vga_write("myos> ");
+    serial_write("myos> ");
 
-    /* Hard-proof colored cells at top-left */
-    VGA[0] = vga_entry('R', (uint8_t)((0x4 << 4) | 0xF)); // white on red bg
-    VGA[1] = vga_entry('G', (uint8_t)((0xA << 4) | 0x0)); // black on light-green bg
-    VGA[2] = vga_entry('B', (uint8_t)((0x1 << 4) | 0xE)); // yellow on blue bg
-
-    vga_row = 2;
-    vga_col = 2;
-
-    vga_write_color(0x0A, 0x00, "GREEN on BLACK\n");
-    vga_write_color(0x0E, 0x00, "YELLOW on BLACK\n");
-    vga_write_color(0x0F, 0x01, "WHITE on BLUE (background should be blue)\n");
-    vga_write_color(0x0C, 0x00, "RED on BLACK\n");
-
-    /* Keep serial alive for debugging */
-    serial_write("KERNEL: VGA color demo drawn\n");
+    keyboard_init_hard_set1();
+    serial_write("KB: ready (Set1 translation)\n\n");
 
     for (;;) {
-        __asm__ volatile ("hlt");
+        uint8_t b;
+        int kind = kbd_read_byte(&b);
+        if (!kind) { cpu_relax(); continue; }
+
+        // If you ever see AUX bytes, ignore them
+        if (kind == 2) continue;
+
+        kbd_handle_set1(b);
     }
 }
