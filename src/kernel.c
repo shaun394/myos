@@ -182,6 +182,60 @@ static void keyboard_init_hard_set1(void) {
 }
 
 /* =========================
+ * TERMINAL INPUT BUFFER
+ * ========================= */
+#define LINE_MAX 128
+
+static char line_buf[LINE_MAX];
+static size_t line_len = 0;
+
+// prints prompt (green) to VGA + serial
+static void term_prompt(void) {
+    vga_set_color(0x0A, 0x00);
+    vga_write("myos> ");
+    serial_write("myos> ");
+}
+
+// erase one char on screen AND remove it from buffer (but don't go past prompt)
+static void term_backspace(void) {
+    if (line_len == 0) return;
+    line_len--;
+    line_buf[line_len] = 0;
+
+    vga_backspace();
+    serial_write("\b \b");
+}
+
+// add a char to buffer + display it
+static void term_put_char(char c) {
+    if (line_len + 1 >= LINE_MAX) return;
+    line_buf[line_len++] = c;
+    line_buf[line_len] = 0;
+
+    serial_write_char(c);
+    vga_putc(c);
+}
+
+static void term_submit_line(void) {
+    serial_write("\n");
+    vga_putc('\n');
+
+    serial_write("You typed: ");
+    serial_write(line_buf);
+    serial_write("\n");
+
+    vga_set_color(0x0F, 0x00);
+    vga_write("You typed: ");
+    vga_write(line_buf);
+    vga_putc('\n');
+
+    line_len = 0;
+    line_buf[0] = 0;
+
+    term_prompt();
+}
+
+/* =========================
  * Scancode Set 1 decode
  * ========================= */
 // Set 1: break = make | 0x80
@@ -244,20 +298,16 @@ static void kbd_handle_set1(uint8_t byte) {
     if (!ch) return;
 
     if (ch == '\b') {
-        vga_backspace();
-        serial_write("\b \b");
+        term_backspace();
         return;
     }
 
     if (ch == '\n') {
-        klog_char('\n');
-        vga_set_color(0x0A, 0x00);
-        vga_write("myos> ");
-        serial_write("myos> ");
+        term_submit_line();
         return;
     }
 
-    klog_char(ch);
+    term_put_char(ch);
 }
 
 /* =========================
@@ -268,9 +318,7 @@ void kmain(void) {
     serial_write("KERNEL: entered kmain\n");
 
     vga_clear(0x0F, 0x00);
-    vga_set_color(0x0A, 0x00);
-    vga_write("myos> ");
-    serial_write("myos> ");
+    term_prompt();
 
     keyboard_init_hard_set1();
     serial_write("KB: ready (Set1 translation)\n\n");
