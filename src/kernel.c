@@ -473,7 +473,7 @@ static void term_execute_line(const char* line) {
         vga_write("  uname       - show system name and architecture\n");
         vga_write("  version     - show kernel version and build info\n");
         vga_write("  sysinfo     - short system summary\n");
-        vga_write("  cpu         - detailed CPU info");
+        vga_write("  cpu         - detailed CPU info\n");
         // (uname/version will be added next)
 
         serial_write("Commands:\n");
@@ -484,7 +484,7 @@ static void term_execute_line(const char* line) {
         serial_write("  uname       - show system name and architecture\n");
         serial_write("  version     - show kernel version and build info\n");
         serial_write("  sysinfo     - short system summary\n");
-        serial_write("  cpu         - detailed CPU info");
+        serial_write("  cpu         - detailed CPU info\n");
         return;
     }
 
