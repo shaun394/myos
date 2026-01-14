@@ -6,8 +6,9 @@
 /* ============================================================
  * SYSTEM / BUILD INFO
  * ============================================================ */
+
 #define MYOS_NAME       "myos"
-#define MYOS_VERSION    "v0.1.4.3"
+#define MYOS_VERSION    "v0.1.5.3"
 #define MYOS_ARCH       "x86_64"
 // #define MYOS_CPU
 // #define MYOS_RAM
@@ -18,6 +19,7 @@
 /* ============================================================
  * LOW-LEVEL PORT I/O
  * ============================================================ */
+
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
@@ -31,6 +33,7 @@ static inline void cpu_relax(void) { __asm__ volatile("pause"); }
 /* ============================================================
  * SERIAL (COM1) - mirrors terminal output to host
  * ============================================================ */
+
 #define COM1 0x3F8
 
 static void serial_init(void) {
@@ -64,6 +67,7 @@ static void serial_hex8(uint8_t v) {
 /* ============================================================
  * VGA TEXT MODE (80x25) - primary console
  * ============================================================ */
+
 static volatile uint16_t* const VGA = (uint16_t*)0xB8000;
 static size_t vga_row = 0, vga_col = 0;
 static uint8_t vga_color = 0x0F;
@@ -111,8 +115,32 @@ static void vga_backspace(void) {
 }
 
 /* ============================================================
- * TINY STRING HELPERS (no libc)
+ * STRING HELPERS
  * ============================================================ */
+
+static void str_copy(char* dst, const char* src, size_t dst_size) {
+    if (dst_size == 0) return;
+    size_t i = 0;
+    while (i +1 < dst_size && src[i]) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
+static void str_cat(char* dst, size_t dst_size, const char* src) {
+    if (dst_size == 0) return;
+    size_t i = 0;
+    while (i < dst_size && dst[i]) i++;
+    if (i >= dst_size) return;
+
+    size_t j = 0;
+    while (i + 1 < dst_size && src[j]) {
+        dst[i++] = src[j++];
+    }
+    dst[i] = 0;
+}
+
 static int streq(const char* a, const char* b) {
     size_t i = 0;
     while (a[i] && b[i]) {
@@ -133,6 +161,7 @@ static int starts_with(const char* s, const char* prefix) {
 /* ============================================================
  * i8042 CONTROLLER + PS/2 BYTE READ (polling)
  * ============================================================ */
+
 #define KBD_DATA   0x60
 #define KBD_STATUS 0x64
 #define KBD_CMD    0x64
@@ -187,6 +216,7 @@ static void kbd_send_cmd(uint8_t cmd) {
 /* ============================================================
  * KEYBOARD INIT (Set 1 via translation)
  * ============================================================ */
+
 static void keyboard_init_hard_set1(void) {
     serial_write("KB: hard init i8042\n");
 
@@ -216,9 +246,53 @@ static void keyboard_init_hard_set1(void) {
     serial_write("KB: cmdbyte after  = 0x"); serial_hex8(cb2); serial_write("\n");
 }
 
+/* =========================
+ * CPU (CPUID)
+ * ========================= */
+
+static inline void cpuid(uint32_t leaf, uint32_t subleaf,
+                         uint32_t* eax, uint32_t* ebx,
+                         uint32_t* ecx, uint32_t* edx) {
+    uint32_t a, b, c,d;
+    __asm__ volatile("cpuid"
+                     : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                     : "a"(leaf), "c"(subleaf));
+    if (eax) *eax = a;
+    if (ebx) *ebx = b;
+    if (ecx) *ecx = c;
+    if (edx) *edx = d;
+}
+
+static void cpu_get_vendor(char out[13]) {
+    uint32_t a, b, c, d;
+    cpuid(0, 0, &a, &b, &c, &d);
+
+    ((uint32_t*)out)[0] = a;
+    ((uint32_t*)out)[1] = b;
+    ((uint32_t*)out)[2] = c;
+    out[12] = 0;
+}
+
+static void cpu_get_brand(char out[49]) {
+    uint32_t max_ext, b, c, d;
+    cpuid(0x80000000u, 1, &max_ext, &b, &c, &d);
+
+    if (max_ext < 0x80000004u) {
+        str_copy(out, "Unknown CPU", 49);
+        return;
+    }
+
+    uint32_t* p = (uint32_t*)out;
+    cpuid(0x80000002u, 0, &p[0], &p[1], &p[2], &p[3]);
+    cpuid(0x80000003u, 0, &p[4], &p[5], &p[6], &p[7]);
+    cpuid(0x80000004u, 0, &p[8], &p[9], &p[10], &p[11]);
+    out[49] = 0;
+}
+
 /* ============================================================
  * TERMINAL (line buffer + prompt + basic commands)
  * ============================================================ */
+
 #define LINE_MAX 128
 
 static char   line_buf[LINE_MAX];
@@ -270,18 +344,22 @@ static void term_execute_line(const char* line) {
         vga_write("  help        - show this help\n");
         vga_write("  clear       - clear the screen\n");
         vga_write("  echo <text> - print text\n");
+        vga_write("  reboot      - reboot (QEMU)\n");
         vga_write("  uname       - show system name and architecture\n");
         vga_write("  version     - show kernel version and build info\n");
-        vga_write("  reboot      - reboot (QEMU)\n");
+        vga_write("  sysinfo     - short system summary\n");
+        vga_write("  cpu         - detailed CPU info\n");
         // (uname/version will be added next)
 
         serial_write("Commands:\n");
         serial_write("  help        - show this help\n");
         serial_write("  clear       - clear the screen\n");
         serial_write("  echo <text> - print text\n");
+        serial_write("  reboot      - reboot (QEMU)\n");
         serial_write("  uname       - show system name and architecture\n");
         serial_write("  version     - show kernel version and build info\n");
-        serial_write("  reboot      - reboot (QEMU)\n");
+        serial_write("  sysinfo     - short system summary\n");
+        serial_write("  cpu         - detailed CPU info\n");
         return;
     }
 
@@ -301,6 +379,12 @@ static void term_execute_line(const char* line) {
         return;
     }
 
+    if (streq(line, "reboot")) {
+        serial_write("rebooting...\n");
+        outb(0x64, 0xFE);
+        for (;;) cpu_relax();
+    }
+
     if (streq(line, "uname")) {
         term_println(MYOS_NAME " " MYOS_ARCH);
         return;
@@ -314,10 +398,47 @@ static void term_execute_line(const char* line) {
         return;
     }
 
-    if (streq(line, "reboot")) {
-        serial_write("rebooting...\n");
-        outb(0x64, 0xFE);
-        for (;;) cpu_relax();
+    if (streq(line, "sysinfo")) {
+        char vendor[13];
+        char brand[49];
+
+        cpu_get_vendor(vendor);
+        cpu_get_brand(brand);
+
+        term_println("OS: " MYOS_NAME " " MYOS_VERSION);
+        term_println("Arch: " MYOS_ARCH);
+        term_println("Platform: " MYOS_PLATFORM);
+
+        vga_set_color(0x0F, 0x00);
+        vga_write("CPU: ");
+        vga_write(brand);
+        vga_putc('\n');
+
+        serial_write("CPU: ");
+        serial_write(brand);
+        serial_write("\n");
+
+        term_println("RAM: (todo - multiboot2)");
+
+        return;
+    }
+
+    if (streq(line, "cpu")) {
+        char vendor[13];
+        char brand[49];
+
+        cpu_get_vendor(vendor);
+        cpu_get_brand(brand);
+
+        term_println("CPU Info:");
+        serial_write("Vendor: "); serial_write(vendor); serial_write("\n");
+        serial_write("Brand: "); serial_write(brand); serial_write("\n");
+
+        vga_set_color(0x0F, 0x00);
+        vga_write("vendor: "); vga_write(vendor); vga_putc('\n');
+        vga_write("Brand: "); vga_write(brand); vga_putc('\n');
+
+        return;
     }
 
     // Unknown command
@@ -347,6 +468,7 @@ static void term_submit_line(void) {
 /* ============================================================
  * KEYBOARD (PS/2 Set 1 decoding)
  * ============================================================ */
+
 static int shift_down = 0;
 
 static char scancode_set1_to_ascii(uint8_t sc) {
@@ -429,6 +551,7 @@ static void kbd_handle_set1(uint8_t byte) {
 /* ============================================================
  * KERNEL ENTRY
  * ============================================================ */
+
 void kmain(void) {
     serial_init();
     serial_write("KERNEL: entered kmain\n");
