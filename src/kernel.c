@@ -8,10 +8,8 @@
  * ============================================================ */
 
 #define MYOS_NAME       "myos"
-#define MYOS_VERSION    "v0.1.5.3"
+#define MYOS_VERSION    "v0.2.5.3"
 #define MYOS_ARCH       "x86_64"
-// #define MYOS_CPU
-// #define MYOS_RAM
 #define MYOS_KEYBOARD   "ps2 set1"
 #define MYOS_PLATFORM   "qemu-pc"
 
@@ -64,98 +62,19 @@ static void serial_hex8(uint8_t v) {
     serial_hex_nibble(v);
 }
 
-/* ============================================================
- * VGA TEXT MODE (80x25) - primary console
- * ============================================================ */
+static void serial_write_u32(uint32_t v) {
+    char buf[11];
+    int i = 0;
 
-static volatile uint16_t* const VGA = (uint16_t*)0xB8000;
-static size_t vga_row = 0, vga_col = 0;
-static uint8_t vga_color = 0x0F;
-
-static inline uint16_t vga_entry(char ch, uint8_t color) {
-    return (uint16_t)ch | ((uint16_t)color << 8);
-}
-static void vga_set_color(uint8_t fg, uint8_t bg) {
-    vga_color = (uint8_t)((bg << 4) | (fg & 0x0F));
-}
-static void vga_clear(uint8_t fg, uint8_t bg) {
-    vga_set_color(fg, bg);
-    for (size_t r = 0; r < 25; r++) {
-        for (size_t c = 0; c < 80; c++) {
-            VGA[r * 80 + c] = vga_entry(' ', vga_color);
-        }
-    }
-    vga_row = 0;
-    vga_col = 0;
-}
-static void vga_putc(char ch) {
-    if (ch == '\n') {
-        vga_col = 0;
-        vga_row = (vga_row + 1) % 25;
+    if (v == 0) {
+        serial_write_char('0');
         return;
     }
-    VGA[vga_row * 80 + vga_col] = vga_entry(ch, vga_color);
-    if (++vga_col >= 80) {
-        vga_col = 0;
-        vga_row = (vga_row + 1) % 25;
+    while (v > 0 && i < 10) {
+        buf[i++] = (char)('0' + (v % 10));
+        v/= 10;
     }
-}
-static void vga_write(const char* s) {
-    for (size_t i = 0; s[i]; i++) vga_putc(s[i]);
-}
-static void vga_backspace(void) {
-    if (vga_col == 0) {
-        if (vga_row == 0) return;
-        vga_row--;
-        vga_col = 79;
-    } else {
-        vga_col--;
-    }
-    VGA[vga_row * 80 + vga_col] = vga_entry(' ', vga_color);
-}
-
-/* ============================================================
- * STRING HELPERS
- * ============================================================ */
-
-static void str_copy(char* dst, const char* src, size_t dst_size) {
-    if (dst_size == 0) return;
-    size_t i = 0;
-    while (i +1 < dst_size && src[i]) {
-        dst[i] = src[i];
-        i++;
-    }
-    dst[i] = 0;
-}
-
-static void str_cat(char* dst, size_t dst_size, const char* src) {
-    if (dst_size == 0) return;
-    size_t i = 0;
-    while (i < dst_size && dst[i]) i++;
-    if (i >= dst_size) return;
-
-    size_t j = 0;
-    while (i + 1 < dst_size && src[j]) {
-        dst[i++] = src[j++];
-    }
-    dst[i] = 0;
-}
-
-static int streq(const char* a, const char* b) {
-    size_t i = 0;
-    while (a[i] && b[i]) {
-        if (a[i] != b[i]) return 0;
-        i++;
-    }
-    return a[i] == 0 && b[i] == 0;
-}
-static int starts_with(const char* s, const char* prefix) {
-    size_t i = 0;
-    while (prefix[i]) {
-        if (s[i] != prefix[i]) return 0;
-        i++;
-    }
-    return 1;
+    while (i--) serial_write_char(buf[i]);
 }
 
 /* ============================================================
@@ -246,6 +165,120 @@ static void keyboard_init_hard_set1(void) {
     serial_write("KB: cmdbyte after  = 0x"); serial_hex8(cb2); serial_write("\n");
 }
 
+/* ============================================================
+ * VGA TEXT MODE (80x25) - primary console
+ * ============================================================ */
+
+static volatile uint16_t* const VGA = (uint16_t*)0xB8000;
+static size_t vga_row = 0, vga_col = 0;
+static uint8_t vga_color = 0x0F;
+
+static inline uint16_t vga_entry(char ch, uint8_t color) {
+    return (uint16_t)ch | ((uint16_t)color << 8);
+}
+
+static void vga_set_color(uint8_t fg, uint8_t bg) {
+    vga_color = (uint8_t)((bg << 4) | (fg & 0x0F));
+}
+
+static void vga_clear(uint8_t fg, uint8_t bg) {
+    vga_set_color(fg, bg);
+    for (size_t r = 0; r < 25; r++) {
+        for (size_t c = 0; c < 80; c++) {
+            VGA[r * 80 + c] = vga_entry(' ', vga_color);
+        }
+    }
+    vga_row = 0;
+    vga_col = 0;
+}
+
+static void vga_putc(char ch) {
+    if (ch == '\n') {
+        vga_col = 0;
+        vga_row = (vga_row + 1) % 25;
+        return;
+    }
+    VGA[vga_row * 80 + vga_col] = vga_entry(ch, vga_color);
+    if (++vga_col >= 80) {
+        vga_col = 0;
+        vga_row = (vga_row + 1) % 25;
+    }
+}
+
+static void vga_write(const char* s) {
+    for (size_t i = 0; s[i]; i++) vga_putc(s[i]);
+}
+
+static void vga_write_u32(uint32_t v) {
+    char buf[11];
+    int i = 0;
+
+    if (v == 0) {
+        vga_putc('0');
+        return;
+    }
+    while (v > 0 && i < 10) {
+        buf[i++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    while (i--) vga_putc(buf[i]);
+}
+
+static void vga_backspace(void) {
+    if (vga_col == 0) {
+        if (vga_row == 0) return;
+        vga_row--;
+        vga_col = 79;
+    } else {
+        vga_col--;
+    }
+    VGA[vga_row * 80 + vga_col] = vga_entry(' ', vga_color);
+}
+
+/* ============================================================
+ * STRING HELPERS
+ * ============================================================ */
+
+static void str_copy(char* dst, const char* src, size_t dst_size) {
+    if (dst_size == 0) return;
+    size_t i = 0;
+    while (i +1 < dst_size && src[i]) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
+static void str_cat(char* dst, size_t dst_size, const char* src) {
+    if (dst_size == 0) return;
+    size_t i = 0;
+    while (i < dst_size && dst[i]) i++;
+    if (i >= dst_size) return;
+
+    size_t j = 0;
+    while (i + 1 < dst_size && src[j]) {
+        dst[i++] = src[j++];
+    }
+    dst[i] = 0;
+}
+
+static int streq(const char* a, const char* b) {
+    size_t i = 0;
+    while (a[i] && b[i]) {
+        if (a[i] != b[i]) return 0;
+        i++;
+    }
+    return a[i] == 0 && b[i] == 0;
+}
+static int starts_with(const char* s, const char* prefix) {
+    size_t i = 0;
+    while (prefix[i]) {
+        if (s[i] != prefix[i]) return 0;
+        i++;
+    }
+    return 1;
+}
+
 /* =========================
  * CPU (CPUID)
  * ========================= */
@@ -267,15 +300,15 @@ static void cpu_get_vendor(char out[13]) {
     uint32_t a, b, c, d;
     cpuid(0, 0, &a, &b, &c, &d);
 
-    ((uint32_t*)out)[0] = a;
-    ((uint32_t*)out)[1] = b;
+    ((uint32_t*)out)[0] = b;
+    ((uint32_t*)out)[1] = d;
     ((uint32_t*)out)[2] = c;
     out[12] = 0;
 }
 
 static void cpu_get_brand(char out[49]) {
     uint32_t max_ext, b, c, d;
-    cpuid(0x80000000u, 1, &max_ext, &b, &c, &d);
+    cpuid(0x80000000u, 0, &max_ext, &b, &c, &d);
 
     if (max_ext < 0x80000004u) {
         str_copy(out, "Unknown CPU", 49);
@@ -286,7 +319,99 @@ static void cpu_get_brand(char out[49]) {
     cpuid(0x80000002u, 0, &p[0], &p[1], &p[2], &p[3]);
     cpuid(0x80000003u, 0, &p[4], &p[5], &p[6], &p[7]);
     cpuid(0x80000004u, 0, &p[8], &p[9], &p[10], &p[11]);
-    out[49] = 0;
+    out[48] = 0;
+}
+
+static void cpu_get_fms(uint32_t* family, uint32_t* model, uint32_t* stepping) {
+    uint32_t a, b, c, d;
+    cpuid(1, 0, &a, &b, &c, &d);
+
+
+    uint32_t base_stepping = (a >> 0) & 0xF;
+    uint32_t base_model    = (a >> 4) & 0xF;
+    uint32_t base_family   = (a >> 8) & 0xF;
+    uint32_t ext_model     = (a >> 16) & 0xF;
+    uint32_t ext_family    = (a >> 20) & 0xFF;
+
+    uint32_t fam = base_family;
+    uint32_t mod = base_model;
+
+    if (base_family == 0xF) {
+        fam = base_family + ext_family;
+    }
+    if (base_family == 0x6 || base_family == 0xF) {
+        mod = (ext_model << 4) | base_model;
+    }
+
+    if (family)   *family   = fam;
+    if (model)    *model    = mod;
+    if (stepping) *stepping = base_stepping;
+}
+
+static uint32_t cpu_get_logical_count(void) {
+    uint32_t a, b, c, d;
+    cpuid(1, 0, &a, &b, &c, &d);
+
+    uint32_t count = (b >> 16) & 0xFF;
+    if (count == 0) count = 1;
+    return count;
+}
+
+static void cpu_print_features(void) {
+    uint32_t a, b, c, d;
+    cpuid(1, 0, &a, &b, &c, &d);
+
+    // ECX features
+    int has_sse3   = (c & (1u << 0))  != 0;
+    int has_ssse3  = (c & (1u << 9))  != 0;
+    int has_sse41  = (c & (1u << 19)) != 0;
+    int has_sse42  = (c & (1u << 20)) != 0;
+    int has_avx    = (c & (1u << 28)) != 0;
+
+    // EDX features
+    int has_mmx    = (d & (1u << 23)) != 0;
+    int has_sse    = (d & (1u << 25)) != 0;
+    int has_sse2   = (d & (1u << 26)) != 0;
+
+    int has_avx2 = 0;
+    uint32_t max_leaf, t1, t2, t3;
+    cpuid(0, 0, &max_leaf, &t1, &t2, &t3);
+    if (max_leaf >= 7) {
+        cpuid(7, 0, &a, &b, &c, &d);
+        has_avx2 = (b & (1u << 5)) != 0;
+    }
+
+    vga_set_color(0x0F, 0x00);
+    vga_write("Features: ");
+    serial_write("Features: ");
+
+    int first = 1;
+    #define FEAT(name, cond) \
+        do { \
+        if (cond) { \
+        if (!first) { vga_write(" "); serial_write(" "); } \
+        vga_write(name); serial_write(name); \
+        first = 0; \
+        } \
+    } while (0)
+
+
+    FEAT("MMX",   has_mmx);
+    FEAT("SSE",   has_sse);
+    FEAT("SSE2",  has_sse2);
+    FEAT("SSE3",  has_sse3);
+    FEAT("SSSE3", has_ssse3);
+    FEAT("SSE4.1",has_sse41);
+    FEAT("SSE4.2",has_sse42);
+    FEAT("AVX",   has_avx);
+    FEAT("AVX2",  has_avx2);
+
+    #undef FEAT
+
+    if (first) { vga_write("(none)"); serial_write("(none)"); }
+
+    vga_putc('\n');
+    serial_write("\n");
 }
 
 /* ============================================================
@@ -348,7 +473,7 @@ static void term_execute_line(const char* line) {
         vga_write("  uname       - show system name and architecture\n");
         vga_write("  version     - show kernel version and build info\n");
         vga_write("  sysinfo     - short system summary\n");
-        vga_write("  cpu         - detailed CPU info\n");
+        vga_write("  cpu         - detailed CPU info");
         // (uname/version will be added next)
 
         serial_write("Commands:\n");
@@ -359,7 +484,7 @@ static void term_execute_line(const char* line) {
         serial_write("  uname       - show system name and architecture\n");
         serial_write("  version     - show kernel version and build info\n");
         serial_write("  sysinfo     - short system summary\n");
-        serial_write("  cpu         - detailed CPU info\n");
+        serial_write("  cpu         - detailed CPU info");
         return;
     }
 
@@ -430,14 +555,33 @@ static void term_execute_line(const char* line) {
         cpu_get_vendor(vendor);
         cpu_get_brand(brand);
 
-        term_println("CPU Info:");
-        serial_write("Vendor: "); serial_write(vendor); serial_write("\n");
-        serial_write("Brand: "); serial_write(brand); serial_write("\n");
+        uint32_t fam, mod, step;
+        cpu_get_fms(&fam, &mod, &step);
+
+        uint32_t logical = cpu_get_logical_count();
 
         vga_set_color(0x0F, 0x00);
-        vga_write("vendor: "); vga_write(vendor); vga_putc('\n');
-        vga_write("Brand: "); vga_write(brand); vga_putc('\n');
+        term_println("CPU Info:\n");
+        serial_write("CPU Info:\n");
 
+        serial_write("Vendor: "); serial_write(vendor); serial_write("\n");
+        serial_write("Brand: "); serial_write(brand); serial_write("\n");
+        serial_write("Family: "); serial_write_u32(fam);
+        serial_write("  Model: "); serial_write_u32(mod);
+        serial_write("  Stepping: "); serial_write_u32(step);
+        serial_write("\n");
+
+        vga_write("Vendor: "); vga_write(vendor); vga_putc('\n');
+        vga_write("Brand: "); vga_write(brand); vga_putc('\n');
+        vga_write("Family: "); vga_write_u32(fam);
+        vga_write("  Model: "); vga_write_u32(mod);
+        vga_write("  Stepping: "); vga_write_u32(step);
+        vga_putc('\n');
+
+        serial_write("Logical CPUs: "); serial_write_u32(logical); serial_write("\n");
+        vga_write("Logical CPUs: "); vga_write_u32(logical); vga_putc('\n');
+
+        cpu_print_features();
         return;
     }
 
