@@ -1,10 +1,16 @@
 // src/kernel.c
+
 #include <stdint.h>
 #include <stddef.h>
 
-/* =========================
- * PORT I/O
- * ========================= */
+/* ============================================================
+ * BUILD / ID (keep simple for now; we’ll wire uname/version next)
+ * ============================================================ */
+// (We’ll add MYOS_NAME / MYOS_VERSION / etc in the next step)
+
+/* ============================================================
+ * LOW-LEVEL PORT I/O
+ * ============================================================ */
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
@@ -15,9 +21,9 @@ static inline uint8_t inb(uint16_t port) {
 }
 static inline void cpu_relax(void) { __asm__ volatile("pause"); }
 
-/* =========================
- * SERIAL (COM1)
- * ========================= */
+/* ============================================================
+ * SERIAL (COM1) - mirrors terminal output to host
+ * ============================================================ */
 #define COM1 0x3F8
 
 static void serial_init(void) {
@@ -48,9 +54,9 @@ static void serial_hex8(uint8_t v) {
     serial_hex_nibble(v);
 }
 
-/* =========================
- * VGA TEXT MODE (80x25)
- * ========================= */
+/* ============================================================
+ * VGA TEXT MODE (80x25) - primary console
+ * ============================================================ */
 static volatile uint16_t* const VGA = (uint16_t*)0xB8000;
 static size_t vga_row = 0, vga_col = 0;
 static uint8_t vga_color = 0x0F;
@@ -63,43 +69,70 @@ static void vga_set_color(uint8_t fg, uint8_t bg) {
 }
 static void vga_clear(uint8_t fg, uint8_t bg) {
     vga_set_color(fg, bg);
-    for (size_t r = 0; r < 25; r++)
-        for (size_t c = 0; c < 80; c++)
+    for (size_t r = 0; r < 25; r++) {
+        for (size_t c = 0; c < 80; c++) {
             VGA[r * 80 + c] = vga_entry(' ', vga_color);
+        }
+    }
     vga_row = 0;
     vga_col = 0;
 }
 static void vga_putc(char ch) {
-    if (ch == '\n') { vga_col = 0; vga_row = (vga_row + 1) % 25; return; }
+    if (ch == '\n') {
+        vga_col = 0;
+        vga_row = (vga_row + 1) % 25;
+        return;
+    }
     VGA[vga_row * 80 + vga_col] = vga_entry(ch, vga_color);
-    if (++vga_col >= 80) { vga_col = 0; vga_row = (vga_row + 1) % 25; }
+    if (++vga_col >= 80) {
+        vga_col = 0;
+        vga_row = (vga_row + 1) % 25;
+    }
 }
-static void vga_write(const char* s) { for (size_t i = 0; s[i]; i++) vga_putc(s[i]); }
+static void vga_write(const char* s) {
+    for (size_t i = 0; s[i]; i++) vga_putc(s[i]);
+}
 static void vga_backspace(void) {
-    if (vga_col == 0) { if (vga_row == 0) return; vga_row--; vga_col = 79; }
-    else vga_col--;
+    if (vga_col == 0) {
+        if (vga_row == 0) return;
+        vga_row--;
+        vga_col = 79;
+    } else {
+        vga_col--;
+    }
     VGA[vga_row * 80 + vga_col] = vga_entry(' ', vga_color);
 }
 
-/* =========================
- * LOG (VGA + SERIAL)
- * ========================= */
-static void klog_char(char c) {
-    if (c == '\n') serial_write("\r\n");
-    else serial_write_char(c);
-    vga_putc(c);
+/* ============================================================
+ * TINY STRING HELPERS (no libc)
+ * ============================================================ */
+static int streq(const char* a, const char* b) {
+    size_t i = 0;
+    while (a[i] && b[i]) {
+        if (a[i] != b[i]) return 0;
+        i++;
+    }
+    return a[i] == 0 && b[i] == 0;
+}
+static int starts_with(const char* s, const char* prefix) {
+    size_t i = 0;
+    while (prefix[i]) {
+        if (s[i] != prefix[i]) return 0;
+        i++;
+    }
+    return 1;
 }
 
-/* =========================
- * i8042 + PS/2 Keyboard (polling)
- * ========================= */
+/* ============================================================
+ * i8042 CONTROLLER + PS/2 BYTE READ (polling)
+ * ============================================================ */
 #define KBD_DATA   0x60
 #define KBD_STATUS 0x64
 #define KBD_CMD    0x64
 
 static void i8042_wait_input_clear(void) {
     for (int i = 0; i < 300000; i++) {
-        if (!(inb(KBD_STATUS) & 0x02)) return; // IBF=0
+        if (!(inb(KBD_STATUS) & 0x02)) return;
         cpu_relax();
     }
 }
@@ -113,7 +146,7 @@ static void i8042_write_data(uint8_t data) {
 }
 static uint8_t i8042_read_data_wait(void) {
     for (int i = 0; i < 300000; i++) {
-        if (inb(KBD_STATUS) & 0x01) return inb(KBD_DATA); // OBF=1
+        if (inb(KBD_STATUS) & 0x01) return inb(KBD_DATA);
         cpu_relax();
     }
     return 0x00;
@@ -126,7 +159,6 @@ static void i8042_flush(void) {
     }
 }
 
-// returns 0 none, 1 keyboard byte, 2 AUX byte
 static int kbd_read_byte(uint8_t* out) {
     uint8_t st = inb(KBD_STATUS);
     if (!(st & 0x01)) return 0;
@@ -137,7 +169,6 @@ static int kbd_read_byte(uint8_t* out) {
 
 static void kbd_send_cmd(uint8_t cmd) {
     i8042_write_data(cmd);
-    // consume ACK (0xFA) if it appears
     for (int i = 0; i < 200000; i++) {
         uint8_t b;
         int kind = kbd_read_byte(&b);
@@ -146,10 +177,12 @@ static void kbd_send_cmd(uint8_t cmd) {
     }
 }
 
+/* ============================================================
+ * KEYBOARD INIT (Set 1 via translation)
+ * ============================================================ */
 static void keyboard_init_hard_set1(void) {
     serial_write("KB: hard init i8042\n");
 
-    // Disable both ports, flush output
     i8042_write_cmd(0xAD);
     i8042_write_cmd(0xA7);
     i8042_flush();
@@ -159,44 +192,37 @@ static void keyboard_init_hard_set1(void) {
     uint8_t cb = i8042_read_data_wait();
     serial_write("KB: cmdbyte before = 0x"); serial_hex8(cb); serial_write("\n");
 
-    // Ensure keyboard clock enabled (bit4=0), keep mouse disabled (bit5=1),
-    // and ENABLE translation (bit6=1) => Set 1 scancodes.
-    cb &= ~(1 << 4);
-    cb |=  (1 << 5);
-    cb |=  (1 << 6);
+    cb &= ~(1u << 4);
+    cb |=  (1u << 5);
+    cb |=  (1u << 6);
 
     i8042_write_cmd(0x60);
     i8042_write_data(cb);
 
-    // Re-enable keyboard port
     i8042_write_cmd(0xAE);
 
-    // Enable scanning
     serial_write("KB: send 0xF4 (enable scanning)\n");
     kbd_send_cmd(0xF4);
 
-    // Confirm
     i8042_write_cmd(0x20);
     uint8_t cb2 = i8042_read_data_wait();
     serial_write("KB: cmdbyte after  = 0x"); serial_hex8(cb2); serial_write("\n");
 }
 
-/* =========================
- * TERMINAL INPUT BUFFER
- * ========================= */
+/* ============================================================
+ * TERMINAL (line buffer + prompt + basic commands)
+ * ============================================================ */
 #define LINE_MAX 128
 
-static char line_buf[LINE_MAX];
+static char   line_buf[LINE_MAX];
 static size_t line_len = 0;
 
-// prints prompt (green) to VGA + serial
 static void term_prompt(void) {
     vga_set_color(0x0A, 0x00);
     vga_write("myos> ");
     serial_write("myos> ");
 }
 
-// erase one char on screen AND remove it from buffer (but don't go past prompt)
 static void term_backspace(void) {
     if (line_len == 0) return;
     line_len--;
@@ -206,7 +232,6 @@ static void term_backspace(void) {
     serial_write("\b \b");
 }
 
-// add a char to buffer + display it
 static void term_put_char(char c) {
     if (line_len + 1 >= LINE_MAX) return;
     line_buf[line_len++] = c;
@@ -216,18 +241,69 @@ static void term_put_char(char c) {
     vga_putc(c);
 }
 
+static void term_clear_screen(void) {
+    vga_clear(0x0F, 0x00);
+}
+
+static void term_execute_line(const char* line) {
+    if (line[0] == 0) return;
+
+    if (streq(line, "help")) {
+        vga_set_color(0x0F, 0x00);
+        vga_write("Commands:\n");
+        vga_write("  help        - show this help\n");
+        vga_write("  clear       - clear the screen\n");
+        vga_write("  echo <text> - print text\n");
+        vga_write("  reboot      - reboot (QEMU)\n");
+        // (uname/version will be added next)
+
+        serial_write("Commands:\n");
+        serial_write("  help        - show this help\n");
+        serial_write("  clear       - clear the screen\n");
+        serial_write("  echo <text> - print text\n");
+        serial_write("  reboot      - reboot (QEMU)\n");
+        return;
+    }
+
+    if (streq(line, "clear")) {
+        term_clear_screen();
+        return;
+    }
+
+    if (starts_with(line, "echo ")) {
+        const char* msg = line + 5;
+        vga_set_color(0x0F, 0x00);
+        vga_write(msg);
+        vga_putc('\n');
+
+        serial_write(msg);
+        serial_write("\n");
+        return;
+    }
+
+    if (streq(line, "reboot")) {
+        serial_write("rebooting...\n");
+        outb(0x64, 0xFE);
+        for (;;) cpu_relax();
+    }
+
+    // Unknown command
+    vga_set_color(0x0C, 0x00);
+    vga_write("Unknown command: ");
+    vga_set_color(0x0F, 0x00);
+    vga_write(line);
+    vga_putc('\n');
+
+    serial_write("Unknown command: ");
+    serial_write(line);
+    serial_write("\n");
+}
+
 static void term_submit_line(void) {
     serial_write("\n");
     vga_putc('\n');
 
-    serial_write("You typed: ");
-    serial_write(line_buf);
-    serial_write("\n");
-
-    vga_set_color(0x0F, 0x00);
-    vga_write("You typed: ");
-    vga_write(line_buf);
-    vga_putc('\n');
+    term_execute_line(line_buf);
 
     line_len = 0;
     line_buf[0] = 0;
@@ -235,14 +311,12 @@ static void term_submit_line(void) {
     term_prompt();
 }
 
-/* =========================
- * Scancode Set 1 decode
- * ========================= */
-// Set 1: break = make | 0x80
+/* ============================================================
+ * KEYBOARD (PS/2 Set 1 decoding)
+ * ============================================================ */
 static int shift_down = 0;
 
 static char scancode_set1_to_ascii(uint8_t sc) {
-    // letters only (US)
     switch (sc) {
         case 0x1E: return shift_down ? 'A' : 'a';
         case 0x30: return shift_down ? 'B' : 'b';
@@ -279,40 +353,49 @@ static char scancode_set1_to_ascii(uint8_t sc) {
 }
 
 static void kbd_handle_set1(uint8_t byte) {
-    // ignore AUX already handled by caller
-
     uint8_t sc = byte;
     int is_break = (sc & 0x80) != 0;
     uint8_t make = (uint8_t)(sc & 0x7F);
 
-    // Shift keys: left 0x2A, right 0x36
     if (make == 0x2A || make == 0x36) {
         shift_down = !is_break;
         return;
     }
 
-    // Ignore releases for normal keys
     if (is_break) return;
 
     char ch = scancode_set1_to_ascii(make);
     if (!ch) return;
 
-    if (ch == '\b') {
-        term_backspace();
-        return;
-    }
-
-    if (ch == '\n') {
-        term_submit_line();
-        return;
-    }
+    if (ch == '\b') { term_backspace(); return; }
+    if (ch == '\n') { term_submit_line(); return; }
 
     term_put_char(ch);
 }
 
-/* =========================
+/* ============================================================
+ * FUTURE FEATURES (placeholders, kept in “safe” order)
+ * ============================================================ */
+/*
+ * 1) Terminal upgrades:
+ *    - scrolling instead of wrap
+ *    - command history (Up/Down)
+ *    - cursor movement (Left/Right)
+ *    - command table + autocomplete
+ *
+ * 2) Interrupts:
+ *    - IDT + PIC remap + IRQ1 keyboard ISR
+ *    - ring buffer for scancodes
+ *    - use HLT in idle loop
+ *
+ * 3) Memory:
+ *    - multiboot2 memory map parsing
+ *    - bump allocator / kmalloc
+ */
+
+/* ============================================================
  * KERNEL ENTRY
- * ========================= */
+ * ============================================================ */
 void kmain(void) {
     serial_init();
     serial_write("KERNEL: entered kmain\n");
@@ -327,8 +410,6 @@ void kmain(void) {
         uint8_t b;
         int kind = kbd_read_byte(&b);
         if (!kind) { cpu_relax(); continue; }
-
-        // If you ever see AUX bytes, ignore them
         if (kind == 2) continue;
 
         kbd_handle_set1(b);
