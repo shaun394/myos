@@ -4,9 +4,16 @@
 #include <stddef.h>
 
 /* ============================================================
- * BUILD / ID (keep simple for now; we’ll wire uname/version next)
+ * SYSTEM / BUILD INFO
  * ============================================================ */
-// (We’ll add MYOS_NAME / MYOS_VERSION / etc in the next step)
+#define MYOS_NAME       "myos"
+#define MYOS_VERSION    "v0.1.4.3"
+#define MYOS_ARCH       "x86_64"
+// #define MYOS_CPU
+// #define MYOS_RAM
+#define MYOS_KEYBOARD   "ps2 set1"
+#define MYOS_PLATFORM   "qemu-pc"
+
 
 /* ============================================================
  * LOW-LEVEL PORT I/O
@@ -245,6 +252,15 @@ static void term_clear_screen(void) {
     vga_clear(0x0F, 0x00);
 }
 
+static void term_println(const char* s) {
+    vga_set_color(0x0F, 0x00);
+    vga_write(s);
+    vga_putc('\n');
+
+    serial_write(s);
+    serial_write("\n");
+}
+
 static void term_execute_line(const char* line) {
     if (line[0] == 0) return;
 
@@ -254,6 +270,8 @@ static void term_execute_line(const char* line) {
         vga_write("  help        - show this help\n");
         vga_write("  clear       - clear the screen\n");
         vga_write("  echo <text> - print text\n");
+        vga_write("  uname       - show system name and architecture\n");
+        vga_write("  version     - show kernel version and build info\n");
         vga_write("  reboot      - reboot (QEMU)\n");
         // (uname/version will be added next)
 
@@ -261,6 +279,8 @@ static void term_execute_line(const char* line) {
         serial_write("  help        - show this help\n");
         serial_write("  clear       - clear the screen\n");
         serial_write("  echo <text> - print text\n");
+        serial_write("  uname       - show system name and architecture\n");
+        serial_write("  version     - show kernel version and build info\n");
         serial_write("  reboot      - reboot (QEMU)\n");
         return;
     }
@@ -278,6 +298,19 @@ static void term_execute_line(const char* line) {
 
         serial_write(msg);
         serial_write("\n");
+        return;
+    }
+
+    if (streq(line, "uname")) {
+        term_println(MYOS_NAME " " MYOS_ARCH);
+        return;
+    }
+
+    if (streq(line, "version")) {
+        term_println(
+            MYOS_NAME " " MYOS_VERSION
+            " (" MYOS_ARCH ", " MYOS_KEYBOARD ", " MYOS_PLATFORM ")"
+            );
         return;
     }
 
